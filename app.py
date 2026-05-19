@@ -1,4 +1,3 @@
-import streamlit as None
 import streamlit as st
 import google.generativeai as genai
 from google.generativeai import types
