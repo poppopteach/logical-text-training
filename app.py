@@ -9,7 +9,6 @@ import socket
 try:
     original_getaddrinfo = socket.getaddrinfo
     def forced_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
-        # 구글 API 서버인 경우에만 IPv4(socket.AF_INET)를 강제 매핑하여 5분 지연 버그 방지
         if host and "googleapis.com" in host:
             family = socket.AF_INET
         return original_getaddrinfo(host, port, family, type, proto, flags)
@@ -66,15 +65,54 @@ st.markdown("""
         border-radius: 6px;
         margin-bottom: 12px;
     }
+    .api-error-box {
+        background-color: #fff5f5;
+        border: 1px solid #feb2b2;
+        padding: 20px;
+        border-radius: 8px;
+        color: #c53030;
+        margin-bottom: 20px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-# Streamlit secrets로부터 안전하게 API 키 로드 + [핵심] REST 프로토콜 강제 지정으로 gRPC 통신 블로킹 무력화
+# [보안 및 에러 방지] API 키 검증 시스템 구축
+has_valid_key = False
+clean_key = ""
+
 if "GEMINI_API_KEY" in st.secrets:
-    # transport="rest"를 지정하여 프록시 및 컨테이너 방화벽을 우회하는 일반 HTTPS 호출 방식을 강제합니다.
-    genai.configure(api_key=st.secrets["GEMINI_API_KEY"], transport="rest")
+    raw_key = st.secrets["GEMINI_API_KEY"]
+    # 보이지 않는 유니코드 문자 전면 제거
+    clean_key = "".join(c for c in raw_key if ord(c) < 128).strip()
+    
+    # 만약 사용자가 가이드 안내용 한글 텍스트를 그대로 적어두었는지 체크
+    if "스튜디오" in raw_key or "선생님" in raw_key or "API_키" in raw_key:
+        st.markdown("""
+        <div class="api-error-box">
+            <h3>🔑 API 키 설정 오류 안내</h3>
+            <p>Streamlit 배포 세팅(Secrets)에 입력된 값이 구글 AI 스튜디오에서 발급받은 <strong>실제 키 값</strong>이 아닌, 가이드 설명용 한글 텍스트 상태 그대로 기재되어 있습니다.</p>
+            <p><strong>[해결 방법]:</strong></p>
+            <ol>
+                <li><a href="https://aistudio.google.com/" target="_blank">구글 AI 스튜디오</a>에 접속하여 <strong>Get API Key</strong>를 통해 영어와 숫자로 구성된 실제 키(<code>AIzaSy...</code>로 시작)를 발급받으세요.</li>
+                <li>Streamlit 대시보드 -> App Settings -> Secrets 칸에 기재된 값을 아래 양식처럼 실제 키로 변경해 주세요:
+                    <br><code>GEMINI_API_KEY = "AIzaSy진짜발급받은키값"</code>
+                </li>
+            </ol>
+        </div>
+        """, unsafe_allow_html=True)
+        st.stop()
+    else:
+        # 정상적인 키 구조 형태일 때만 API 활성화
+        genai.configure(api_key=clean_key, transport="rest")
+        has_valid_key = True
 else:
-    st.error("🔑 Streamlit secrets에 'GEMINI_API_KEY'가 설정되지 않았습니다. 관리자 설정을 확인해 주세요.")
+    st.markdown("""
+    <div class="api-error-box">
+        <h3>🔑 API 키 미설정 안내</h3>
+        <p>Streamlit Advanced Settings -> Secrets 칸에 <code>GEMINI_API_KEY</code>가 등록되어 있지 않습니다.</p>
+        <p>프로젝트 설정에 키 값을 올바르게 기입해 주시기 바랍니다.</p>
+    </div>
+    """, unsafe_allow_html=True)
     st.stop()
 
 # 상태 관리를 위한 세션 초기화
@@ -118,8 +156,6 @@ def extract_text_from_file(uploaded_file):
     이미지 및 PDF 파일을 읽어 최적의 속도로 고정밀 텍스트를 추출합니다.
     진행 상황을 st.status를 사용하여 명확하게 시각화합니다.
     """
-    import base64  # latin-1 인코딩 오류 방지용 base64 모듈 임포트
-    # UI 상에서 실시간으로 진척률을 인지할 수 있도록 st.status 블록 오픈
     with st.status("📁 파일 스캔 및 AI 문맥 분석 대기 중...", expanded=True) as status:
         try:
             mime_type = uploaded_file.type
@@ -133,7 +169,7 @@ def extract_text_from_file(uploaded_file):
                     return local_text
                 status.write("⚠️ 디지털 텍스트 영역이 존재하지 않는 스캔형 PDF입니다. AI OCR 분석으로 자동 전환합니다.")
 
-            # [2] 이미지/스캔본 AI OCR 처리 (네이티브 Base64 + REST API 전송)
+            # [2] 이미지/스캔본 AI OCR 처리
             status.write("🚀 [2단계] AI 문서 복원 엔진(Gemini 1.5 Flash)을 호출합니다...")
             model = genai.GenerativeModel("gemini-1.5-flash")
             prompt = (
@@ -145,32 +181,25 @@ def extract_text_from_file(uploaded_file):
             uploaded_file.seek(0)
             file_bytes = uploaded_file.read()
             
-            # 이미지 파일인 경우 리사이징 및 가볍게 압축 처리 진행 (메모리 내 연산)
-            if mime_type.startswith("image/"):
-                try:
-                    img = Image.open(io.BytesIO(file_bytes))
-                    width, height = img.size
-                    if width > 2000 or height > 2000:
-                        status.write("⚙️ 초고해상도 이미지 최적화 리사이징 중...")
-                        img.thumbnail((1200, 1200), Image.Resampling.LANCZOS)
-                        img_byte_arr = io.BytesIO()
-                        img.save(img_byte_arr, format='JPEG', quality=85)
-                        file_bytes = img_byte_arr.getvalue()
-                        mime_type = "image/jpeg"
-                except Exception:
-                    pass
-            
-            # [핵심] 바이너리 데이터 대신 100% 안전한 ASCII Base64 문자열로 변환하여 전송
-            # 이를 통해 transport="rest" 환경에서 발생하는 latin-1 인코딩 오류를 완벽하게 방지합니다.
-            base64_data = base64.b64encode(file_bytes).decode("utf-8")
-            
-            file_part = {
-                "mime_type": mime_type,
-                "data": base64_data
-            }
-            
             status.write("📡 [3단계] 안전한 HTTPS(REST) 전송 포트로 데이터 분석을 위탁 중...")
-            response = model.generate_content([file_part, prompt])
+            
+            # 이미지 파일인 경우 리사이징 및 모바일 촬영본 최적화 진행 후 PIL 이미지로 직접 전달
+            if mime_type.startswith("image/"):
+                img = Image.open(io.BytesIO(file_bytes))
+                width, height = img.size
+                if width > 2000 or height > 2000:
+                    status.write("⚙️ 초고해상도 이미지 최적화 리사이징 중...")
+                    img.thumbnail((1200, 1200), Image.Resampling.LANCZOS)
+                
+                # [안전 가이드 준수] 복잡한 직렬화 코덱 에러 예방을 위해 네이티브 PIL 이미지 객체를 그대로 전송
+                response = model.generate_content([img, prompt])
+            else:
+                # PDF 파일인 경우, SDK 표준 규격을 준수하여 raw bytes 형태로 전송
+                file_part = {
+                    "mime_type": mime_type,
+                    "data": file_bytes
+                }
+                response = model.generate_content([file_part, prompt])
                 
             status.write("🎉 [4단계] 텍스트 반환 구조 복원 및 디코딩 중...")
             extracted_result = response.text.strip()
@@ -185,13 +214,12 @@ def extract_text_from_file(uploaded_file):
 
 def run_pedagogical_analysis(original, student):
     """
-    제미나이 1.5 플래시 모델(초고속)을 활용하여 원문과 학생 글을 분석합니다.
+    제미나이 1.5 플래시 모델을 활용하여 원문과 학생 글을 분석합니다.
     완성도 점수에 근거하여 질문의 개수를 정밀 제어하고 엄격한 소크라테스식 피드백 JSON을 반환받습니다.
     """
     with st.status("🧠 소크라테스 인지 모델 가동 및 분석 중...", expanded=True) as status:
         try:
             status.write("📡 [1단계] 제미나이 초고속 분석 엔진 연결 중...")
-            # 초고속 분석 및 API 호출 한도 극대화를 위해 gemini-1.5-flash 모델 적용
             model = genai.GenerativeModel("gemini-1.5-flash")
             
             status.write("📖 [2단계] 교육학적 질문 생성 및 감점 조건 알고리즘 주입 중...")
@@ -273,6 +301,9 @@ def run_pedagogical_analysis(original, student):
             }
             return fallback_data
 
+# =====================================================================
+# PAGE 1: 메인 화면
+# =====================================================================
 if st.session_state.page == 1:
     st.markdown("<div style='text-align: center; padding-top: 50px;'>", unsafe_allow_html=True)
     st.title("🔍 소크라테스식 독해력 피드백 튜터")
@@ -293,6 +324,9 @@ if st.session_state.page == 1:
     if st.button("🚀 피드백 튜터와 학습 시작하기", use_container_width=True):
         go_to_page(2)
 
+# =====================================================================
+# PAGE 2: 원문 입력 단계
+# =====================================================================
 elif st.session_state.page == 2:
     st.subheader("📋 1단계: 읽기 원문 등록")
     st.progress(0.2)
@@ -342,6 +376,9 @@ elif st.session_state.page == 2:
         if is_disabled:
             st.caption("⚠️ 분석할 원문을 최소 10자 이상 입력하시거나 파일을 분석해야 다음 단계로 이동 가능합니다.")
 
+# =====================================================================
+# PAGE 3: 학생 요약본 등록 단계
+# =====================================================================
 elif st.session_state.page == 3:
     st.subheader("✍️ 2단계: 나의 글(요약본) 등록")
     st.progress(0.5)
@@ -394,6 +431,9 @@ elif st.session_state.page == 3:
         if is_disabled:
             st.caption("⚠️ 평가 대상이 될 본인의 요약 글을 최소 10자 이상 성실히 기재해 주셔야 합니다.")
 
+# =====================================================================
+# PAGE 4: 완성도 점수 결과 단계
+# =====================================================================
 elif st.session_state.page == 4:
     st.subheader("📊 3단계: 독해 완성도 판정")
     st.progress(0.75)
@@ -437,6 +477,9 @@ elif st.session_state.page == 4:
             if st.button("💡 소크라테스식 유도 질문 확인하기", type="primary"):
                 go_to_page(5)
 
+# =====================================================================
+# PAGE 5: 소크라테스식 성찰 유도 발문
+# =====================================================================
 elif st.session_state.page == 5:
     st.subheader("💡 4단계: 소크라테스식 자기 성찰 질문")
     st.progress(1.0)
