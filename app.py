@@ -177,22 +177,29 @@ def run_pedagogical_analysis(original, student):
             system_instruction=socratic_system_instruction
         )
         
-        prompt = (
-            f"교사가 제공한 [원문]:\n\"\"\"\n{original}\n\"\"\"\n\n"
-            f"학생이 요약/재구성한 [학생 글]:\n\"\"\"\n{student}\n\"\"\"\n\n"
-            "위의 두 텍스트를 철저히 정밀 분석하여 아래의 구조를 가진 JSON 데이터만 반환하세요.\n"
-            "반드시 백틱(```json ... ```) 기호는 생략하고 순수한 JSON 스트링 구조만 반환해야 합니다.\n"
-            "{\n"
-            "  \"score\": 85, // 원문 정보 반영율 점수(정수)\n"
-            "  \"encouragement\": \"...", // 격려와 조언 한 줄 피드백\n"
-            "  \"questions\": [\n"
-            "    {\n"
-            "      \"question\": \"질문 내용\", // 학생의 메타인지를 깨우는 정교한 유도 질문\n"
-            "      \"hint\": \"힌트 내용\" // 정답이 아닌 찾아갈 단서 (예: 원문 몇 문단 확인)\n"
-            "    }\n"
-            "  ]\n"
-            "}"
-        )
+        prompt = f"""교사가 제공한 [원문]:
+\"\"\"
+{original}
+\"\"\"
+
+학생이 요약/재구성한 [학생 글]:
+\"\"\"
+{student}
+\"\"\"
+
+위의 두 텍스트를 철저히 정밀 분석하여 아래의 구조를 가진 JSON 데이터만 반환하세요.
+반드시 백틱(```json ... ```) 기호는 생략하고 순수한 JSON 스트링 구조만 반환해야 합니다.
+
+{{
+  "score": 85,
+  "encouragement": "격려와 조언 한 줄 피드백",
+  "questions": [
+    {{
+      "question": "학생의 메타인지를 깨우는 정교한 유도 질문",
+      "hint": "정답이 아닌 스스로 찾아갈 수 있는 단서 (예: 원문 3문단 확인)"
+    }}
+  ]
+}}"""
         
         response = model.generate_content(
             prompt,
