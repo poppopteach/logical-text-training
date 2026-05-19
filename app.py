@@ -118,6 +118,7 @@ def extract_text_from_file(uploaded_file):
     이미지 및 PDF 파일을 읽어 최적의 속도로 고정밀 텍스트를 추출합니다.
     진행 상황을 st.status를 사용하여 명확하게 시각화합니다.
     """
+    import base64  # latin-1 인코딩 오류 방지용 base64 모듈 임포트
     # UI 상에서 실시간으로 진척률을 인지할 수 있도록 st.status 블록 오픈
     with st.status("📁 파일 스캔 및 AI 문맥 분석 대기 중...", expanded=True) as status:
         try:
@@ -132,7 +133,7 @@ def extract_text_from_file(uploaded_file):
                     return local_text
                 status.write("⚠️ 디지털 텍스트 영역이 존재하지 않는 스캔형 PDF입니다. AI OCR 분석으로 자동 전환합니다.")
 
-            # [2] 이미지/스캔본 AI OCR 처리 (네이티브 PIL 방식 + REST API 전송)
+            # [2] 이미지/스캔본 AI OCR 처리 (네이티브 Base64 + REST API 전송)
             status.write("🚀 [2단계] AI 문서 복원 엔진(Gemini 1.5 Flash)을 호출합니다...")
             model = genai.GenerativeModel("gemini-1.5-flash")
             prompt = (
@@ -141,27 +142,35 @@ def extract_text_from_file(uploaded_file):
                 "인사말이나 서론 설명은 절대 출력하지 마십시오."
             )
             
+            uploaded_file.seek(0)
+            file_bytes = uploaded_file.read()
+            
+            # 이미지 파일인 경우 리사이징 및 가볍게 압축 처리 진행 (메모리 내 연산)
             if mime_type.startswith("image/"):
-                uploaded_file.seek(0)
-                img = Image.open(uploaded_file)
-                
-                # 모바일 카메라 등으로 찍은 초고해상도 이미지인 경우 효율 증대를 위한 1차 최적화
-                width, height = img.size
-                if width > 2500 or height > 2500:
-                    status.write("⚙️ 초고해상도 이미지 최적화 리사이징 중...")
-                    img.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
-                
-                status.write("📡 [3단계] 안전한 HTTPS(REST) 전송 포트로 이미지 데이터 분석을 위탁 중...")
-                response = model.generate_content([img, prompt])
-            else:
-                # PDF 스캔형 문서의 경우 바이트 직접 전송
-                uploaded_file.seek(0)
-                file_part = {
-                    "mime_type": mime_type,
-                    "data": uploaded_file.read()
-                }
-                status.write("📡 [3단계] 안전한 HTTPS(REST) 전송 포트로 PDF 문서 분석을 위탁 중...")
-                response = model.generate_content([file_part, prompt])
+                try:
+                    img = Image.open(io.BytesIO(file_bytes))
+                    width, height = img.size
+                    if width > 2000 or height > 2000:
+                        status.write("⚙️ 초고해상도 이미지 최적화 리사이징 중...")
+                        img.thumbnail((1200, 1200), Image.Resampling.LANCZOS)
+                        img_byte_arr = io.BytesIO()
+                        img.save(img_byte_arr, format='JPEG', quality=85)
+                        file_bytes = img_byte_arr.getvalue()
+                        mime_type = "image/jpeg"
+                except Exception:
+                    pass
+            
+            # [핵심] 바이너리 데이터 대신 100% 안전한 ASCII Base64 문자열로 변환하여 전송
+            # 이를 통해 transport="rest" 환경에서 발생하는 latin-1 인코딩 오류를 완벽하게 방지합니다.
+            base64_data = base64.b64encode(file_bytes).decode("utf-8")
+            
+            file_part = {
+                "mime_type": mime_type,
+                "data": base64_data
+            }
+            
+            status.write("📡 [3단계] 안전한 HTTPS(REST) 전송 포트로 데이터 분석을 위탁 중...")
+            response = model.generate_content([file_part, prompt])
                 
             status.write("🎉 [4단계] 텍스트 반환 구조 복원 및 디코딩 중...")
             extracted_result = response.text.strip()
