@@ -45,41 +45,59 @@ def extract_text_from_file(file_bytes, file_name, mime_type):
     """
     ext = file_name.split('.')[-1].lower()
     
-    if ext == 'txt':
-        return file_bytes.decode('utf-8')
-    
-    elif ext == 'docx':
-        doc = docx.Document(io.BytesIO(file_bytes))
-        return "\n".join([paragraph.text for paragraph in doc.paragraphs])
-    
-    elif ext in ['jpg', 'jpeg', 'png']:
-        image = Image.open(io.BytesIO(file_bytes))
-        prompt = (
-            "이 이미지는 수능/모의고사 등의 독해 지문 문서입니다. 다단 편집이 되어 있을 수 있으므로 "
-            "글의 흐름에 맞게 정확히 텍스트만 추출해 주세요. 어떠한 부가 설명도 하지 말고 텍스트만 반환하세요."
-        )
-        response = model.generate_content([prompt, image])
-        return response.text
-    
-    elif ext == 'pdf':
-        pdf_document = fitz.open(stream=file_bytes, filetype="pdf")
-        extracted_text = ""
-        # 다중 페이지 PDF의 경우 각 페이지를 이미지로 변환하여 Gemini에게 전달 (최대 5페이지만 처리하여 부하 방지)
-        max_pages = min(len(pdf_document), 5)
+    try:
+        if ext == 'txt':
+            return file_bytes.decode('utf-8')
         
-        prompt = (
-            "다음은 수능/모의고사 등의 독해 지문 PDF의 페이지 이미지입니다. 다단 편집을 고려하여 "
-            "논리적 흐름에 맞게 텍스트만 추출해 주세요. 부가 설명 없이 텍스트만 반환하세요."
-        )
+        elif ext == 'docx':
+            doc = docx.Document(io.BytesIO(file_bytes))
+            return "\n".join([paragraph.text for paragraph in doc.paragraphs])
         
-        for page_num in range(max_pages):
-            page = pdf_document.load_page(page_num)
-            pix = page.get_pixmap(dpi=150) # 화질과 속도의 타협점
-            img_bytes = pix.tobytes("png")
-            image = Image.open(io.BytesIO(img_bytes))
-            response = model.generate_content([prompt, image])
-            extracted_text += response.text + "\n\n"
-        return extracted_text.strip()
+        elif ext in ['jpg', 'jpeg', 'png']:
+            image = Image.open(io.BytesIO(file_bytes))
+            if image.mode != 'RGB':
+                image = image.convert('RGB')
+            
+            img_byte_arr = io.BytesIO()
+            image.save(img_byte_arr, format='JPEG', quality=95)
+            optimized_bytes = img_byte_arr.getvalue()
+            
+            prompt = (
+                "이 이미지는 수능/모의고사 등의 독해 지문 문서입니다. 다단 편집이 되어 있을 수 있으므로 "
+                "글의 흐름에 맞게 정확히 텍스트만 추출해 주세요. 어떠한 부가 설명도 하지 말고 텍스트만 반환하세요."
+            )
+            
+            response = model.generate_content([
+                prompt, 
+                {"mime_type": "image/jpeg", "data": optimized_bytes}
+            ])
+            return response.text
+        
+        elif ext == 'pdf':
+            pdf_document = fitz.open(stream=file_bytes, filetype="pdf")
+            extracted_text = ""
+            max_pages = min(len(pdf_document), 5)
+            
+            prompt = (
+                "다음은 수능/모의고사 등의 독해 지문 PDF의 페이지 이미지입니다. 다단 편집을 고려하여 "
+                "논리적 흐름에 맞게 텍스트만 추출해 주세요. 부가 설명 없이 텍스트만 반환하세요."
+            )
+            
+            for page_num in range(max_pages):
+                page = pdf_document.load_page(page_num)
+                pix = page.get_pixmap(dpi=150, alpha=False) 
+                img_bytes = pix.tobytes("jpeg")
+                
+                response = model.generate_content([
+                    prompt, 
+                    {"mime_type": "image/jpeg", "data": img_bytes}
+                ])
+                extracted_text += response.text + "\n\n"
+            return extracted_text.strip()
+            
+    except Exception as e:
+        st.error(f"AI 텍스트 추출 중 통신 오류가 발생했습니다: {str(e)}")
+        return ""
     
     return ""
 
