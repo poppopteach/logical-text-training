@@ -1,4 +1,6 @@
 streamlit
 google-generativeai
+PyMuPDF
 Pillow
-pypdf
+python-docx
+plotly
