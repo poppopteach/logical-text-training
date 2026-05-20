@@ -23,8 +23,8 @@ if "GEMINI_API_KEY" not in st.secrets:
 
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 
-# 가벼우면서도 성능이 뛰어나고 멀티모달이 지원되는 1.5 Flash 모델 사용
-MODEL_NAME = "gemini-1.5-flash"
+# 가벼우면서도 성능이 뛰어나고 멀티모달이 지원되는 2.5 Flash 모델 사용 (기존 1.5 서비스 종료로 인한 변경)
+MODEL_NAME = "gemini-2.5-flash"
 model = genai.GenerativeModel(MODEL_NAME)
 
 # --- [상태 관리 초기화] ---
